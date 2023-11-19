@@ -24,3 +24,4 @@ class MySnapshotTest(SnapshotTestCase):
 - Cleaning unused snapshots in the `.snapshots` directory (how would that work with skipped tests)
 - Perhaps a CLI so you don't have to fiddle with environment variables
 - Interactive mode like jest
+- Only write snapshots if the rest of the test passes
