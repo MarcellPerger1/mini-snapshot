@@ -19,9 +19,18 @@ class CantUpdateSnapshots(RuntimeError):
 def format_obj(obj: object) -> str:
     if method := getattr(obj, '_format_snapshot_', None):
         return method()
+    if isinstance(obj, str):
+        # already string, don't repr it to help with snapshot readability
+        # TODO: should be put something in front of this 
+        #  e.g. '<str>(' + obj + ')' etc.,
+        #  maybe repr it into a triple-quoted string?
+        return obj
     try:
         return pprint.pformat(obj)
     except TypeError:
+        # TODO: this will never match for classes without __repr__ 
+        #  as the fallback is to <object at 0x1234...> and the address 
+        #  will (almost) never be the same
         return repr(obj)
 
 
