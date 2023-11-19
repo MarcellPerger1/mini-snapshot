@@ -12,3 +12,8 @@ class MySnapshotTest(SnapshotTestCase):
         # test that `value` matches the snapshot
         self.assertMatchesSnapshot(value)
 ```
+
+## Features
+- Working snapshot testing library
+- Updating snapshots by setting environment variable `PY_SNAPSHOTTEST_UPDATE=1`
+- It **shouldn't** cause any arbitary code execution even if the snapshots aren't trusted
