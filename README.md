@@ -6,7 +6,7 @@ A small (<250 lines of code) snapshot testing library for python's unittest. Thi
 import unittest
 import mini_snapshot
 
-class MySnapshotTest(unittest.TestCase):
+class MySnapshotTest(SnapshotTestCase):
     def test_something(self):
         value = ...  # code to test here
         # test that `value` matches the snapshot
