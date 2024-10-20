@@ -1,5 +1,5 @@
 # mini-snapshot
-A small (<250 lines of code) snapshot testing library for python's unittest. This is a work in progress right now.
+A small (<300 lines of code) snapshot testing library for python's unittest. This is a work in progress right now.
 
 ## Usage
 ```python
@@ -19,7 +19,7 @@ class MySnapshotTest(SnapshotTestCase):
 - It **shouldn't** cause any arbitrary code execution even if the snapshots aren't trusted
 - Customizable snapshot formatting: define `_format_snapshot_` (single underscores, not double) on a class like you would do with `__repr__`
 - Works on python 3.10+
-## Future possible features (roughly largest -> samllest priority)
+## Future possible features (roughly largest -> smallest priority)
 - Make it work on classes without a `__repr__`
 - Cleaning unused snapshots in the `.snapshots` directory (how would that work with skipped tests)
 - Put it on pypi so that it can be installed easily with pip
