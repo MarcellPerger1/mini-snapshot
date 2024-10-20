@@ -50,7 +50,7 @@ def _safe_cls_name(o: type):
         return o.__name__
 
 
-def open_or_create_rw(path: str):
+def _open_or_create_rw(path: str):
     try:
         return open(path, 'r+')
     except FileNotFoundError:
@@ -70,20 +70,19 @@ _SNAPS_DONT_MATCH_MSG = (
 
 class SnapshotTestCase(unittest.TestCase):
     snap_filename: str | None = None
-    _src_file: str
-    _snap_file: str
-    _snaps_dir: Path
-    cls_name: str
-
-    _files_cache: dict[str, dict[str, str]]
+    snaps_dir: Path | None = None
+    snap_file: str | None = None
+    cls_name: str | None = None
 
     update_snapshots: bool | None = None
+
+    _files_cache: dict[str, dict[str, str]]
     _queued_changes: dict[str, dict[str, str]]
 
     @classmethod
     def setUpClass(cls) -> None:
         cls._find_snapshot_filepath()
-        cls.cls_name = _safe_cls_name(cls)
+        cls.cls_name = cls.cls_name or _safe_cls_name(cls)
         cls._files_cache = {}
         if cls.update_snapshots is None:
             cls.update_snapshots = os.environ.get(
@@ -96,12 +95,10 @@ class SnapshotTestCase(unittest.TestCase):
 
     @classmethod
     def _find_snapshot_filepath(cls):
-        cls._src_file = inspect.getfile(cls)
-        src_file = Path(cls._src_file)
-        if not cls.snap_filename:
-            cls.snap_filename = src_file.with_suffix('.txt').name
-        cls._snaps_dir = src_file.parent / '.snapshots'
-        cls._snap_file = str(cls._snaps_dir / cls.snap_filename)
+        src_file = Path(inspect.getfile(cls))
+        cls.snap_filename = cls.snap_filename or src_file.with_suffix('.txt').name
+        cls.snaps_dir = cls.snaps_dir or src_file.parent / '.snapshots'
+        cls.snap_file = cls.snap_file or str(cls.snaps_dir / cls.snap_filename)
 
     def setUp(self) -> None:
         self.method_name = self._testMethodName
@@ -110,14 +107,14 @@ class SnapshotTestCase(unittest.TestCase):
     @classmethod
     def _read_snapshot_text(cls):
         try:
-            with open(cls._snap_file) as f:
+            with open(cls.snap_file) as f:
                 return f.read()
         except FileNotFoundError as orig_err:
             raise SnapshotsNotFound("Snapshot file not found") from orig_err
 
     @classmethod
     def _read_snapshot_file(cls):
-        file = cls._snap_file
+        file = cls.snap_file
         if file in cls._files_cache:
             return cls._files_cache[file]
         try:
@@ -148,7 +145,7 @@ class SnapshotTestCase(unittest.TestCase):
         return name
 
     def queue_write_snapshot(self, full_name: str, new_value: str):
-        self._queued_changes.setdefault(self._snap_file, {})[full_name] = new_value
+        self._queued_changes.setdefault(self.snap_file, {})[full_name] = new_value
 
     def lookup_snapshot(self, full_name: str):
         try:
@@ -165,17 +162,17 @@ class SnapshotTestCase(unittest.TestCase):
     @classmethod
     def _make_snaps_dir(cls):
         try:
-            cls._snaps_dir.mkdir(exist_ok=True)
+            cls.snaps_dir.mkdir(exist_ok=True)
         except FileExistsError as e:
             raise CantUpdateSnapshots(
-                f"Can't write snapshots ({cls._snaps_dir} is not a directory"
+                f"Can't write snapshots ({cls.snaps_dir} is not a directory"
                 f" so can't write snapshots to it)") from e
 
     @classmethod
     def write_queued_snapshots(cls):
         cls._make_snaps_dir()
         for path, changes in cls._queued_changes.items():
-            with open_or_create_rw(path) as f:  # do in one go to reduce chance of racing
+            with _open_or_create_rw(path) as f:  # do in one go to reduce chance of racing
                 orig = parse_snap(f.read())  # Use most up-to-date value (no cache)
                 f.seek(0, os.SEEK_SET)  # go to start
                 format_snap(f, cls._apply_file_changes(orig, changes))
