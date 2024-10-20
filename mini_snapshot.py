@@ -4,6 +4,7 @@ import os
 import pprint
 import sys
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
@@ -34,6 +35,14 @@ def format_obj(obj: object) -> str:
         return repr(obj)
 
 
+def _string_is_number(s: str):
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+
+
 def _safe_cls_name(o: type):
     try:
         return o.__qualname__
@@ -41,12 +50,21 @@ def _safe_cls_name(o: type):
         return o.__name__
 
 
+def open_or_create_rw(path: str):
+    try:
+        return open(path, 'r+')
+    except FileNotFoundError:
+        return open(path, 'w+')  # Try to create if not exists
+
+
 _SNAPS_NOT_FOUND_MSG = (
     'Snapshots not found, execute this with PY_SNAPSHOTTEST_UPDATE=1 to write \n'
-    'the following as the snapshot for {full_name}:')
+    'the following as the snapshot for {full_name}:\n'
+    '{value}')
 _SNAPS_DONT_MATCH_MSG = (
     'Snapshots dont match actual value, execute this with PY_SNAPSHOTTEST_UPDATE=1 \n'
-    'to write the following as the snapshot for {full_name}:'
+    'to write the following as the snapshot for {full_name}:\n'
+    '{value}'
 )
 
 
@@ -60,7 +78,7 @@ class SnapshotTestCase(unittest.TestCase):
     _files_cache: dict[str, dict[str, str]]
 
     update_snapshots: bool | None = None
-    _queued_snapshot_writes: dict[str, dict[str, str]]
+    _queued_changes: dict[str, dict[str, str]]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -70,7 +88,10 @@ class SnapshotTestCase(unittest.TestCase):
         if cls.update_snapshots is None:
             cls.update_snapshots = os.environ.get(
                 'PY_SNAPSHOTTEST_UPDATE', '0').lower() in ('1', 'true', 'yes')
-        cls._queued_snapshot_writes = {}
+        # Store changes, not entire file. This reduces (but doesn't eliminate)
+        # chance of race conditions when using threading.
+        # Additionally, reduces memory load during the main bit of the tests.
+        cls._queued_changes = {}
         super().setUpClass()
 
     @classmethod
@@ -87,7 +108,7 @@ class SnapshotTestCase(unittest.TestCase):
         self.next_idx = 0
 
     @classmethod
-    def _read_snapshot_file_text(cls):
+    def _read_snapshot_text(cls):
         try:
             with open(cls._snap_file) as f:
                 return f.read()
@@ -100,147 +121,148 @@ class SnapshotTestCase(unittest.TestCase):
         if file in cls._files_cache:
             return cls._files_cache[file]
         try:
-            contents = cls._read_snapshot_file_text()
-            name_to_text = SnapParser(contents).parse_snap()
+            snap_data = parse_snap(cls._read_snapshot_text())
         except SnapshotsNotFound:
             if not cls.update_snapshots:
                 raise
-            cls.create_snapshot_file()
-            name_to_text = {}  # need to have something
-        cls._files_cache[file] = name_to_text
-        return name_to_text
-
-    @classmethod
-    def create_snapshot_file(cls):
-        cls._make_snaps_dir()
-        Path(cls._snap_file).touch()
-
-    @classmethod
-    def _read_snapshot(cls, full_name: str):
-        try:
-            return cls._read_snapshot_file()[full_name]
-        except KeyError:
-            raise SnapshotsNotFound(f"Snapshot for {full_name} not found")
+            snap_data = {}  # need to have something
+        cls._files_cache[file] = snap_data
+        return snap_data
 
     def assertMatchesSnapshot(self, obj: object, name: str | None = None,
                               msg: str | None = None):
-        full_name = self._get_full_name(name)
-        actual = format_obj(obj)
-        try:
-            expected = self._read_snapshot(full_name)
-        except SnapshotsNotFound:
-            if self.update_snapshots:
-                return self.queue_write_snapshot(full_name, actual)
-            print(_SNAPS_NOT_FOUND_MSG.format(full_name=full_name),
-                  file=sys.stderr, end='\n\n')
-            print(actual, file=sys.stderr)
-            raise
+        SingleSnapshot(
+            self, self._allocate_sub_name(name), self.get_opts()
+        ).assert_matches(format_obj(obj), msg)
 
-        if expected == actual:
-            return
-        if self.update_snapshots:
-            return self.queue_write_snapshot(full_name, actual)
-        if self.longMessage:
-            print(_SNAPS_DONT_MATCH_MSG.format(full_name=full_name),
-                  file=sys.stderr, end='\n\n')
-            print(actual, file=sys.stderr)
-            self.assertEqual(expected, actual, msg)
-        else:
-            self.assertEqual(expected, actual, msg)
+    def get_opts(self) -> 'SnapOptions':
+        return SnapOptions(self.update_snapshots, self.longMessage)
 
-    def _get_full_name(self, name: str | None):
+    def _allocate_sub_name(self, name: str):
         if name is None:
-            name = str(self.next_idx)
+            v = self.next_idx
             self.next_idx += 1
-        else:
-            try:
-                int(name)
-            except ValueError:
-                pass
-            else:
-                raise ValueError("Custom name can't be a number")
-        full_name = f'{self.cls_name}::{self.method_name}:{name}'
-        return full_name
+            return str(v)
+        if _string_is_number(name):
+            raise ValueError("Custom name can't be a number")
+        return name
 
     def queue_write_snapshot(self, full_name: str, new_value: str):
-        print(f'Queueing write for snapshot {full_name}', file=sys.stderr)
-        if self._snap_file not in self._queued_snapshot_writes:
-            # create the new entry, copied from existing
-            self._queued_snapshot_writes[self._snap_file] = self._read_snapshot_file()
-        self._queued_snapshot_writes[self._snap_file][full_name] = new_value
+        self._queued_changes.setdefault(self._snap_file, {})[full_name] = new_value
+
+    def lookup_snapshot(self, full_name: str):
+        try:
+            return self._read_snapshot_file()[full_name]
+        except KeyError:
+            raise SnapshotsNotFound(f"Snapshot for {full_name} not found") from None
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._files_cache.clear()  # Free that huge data structure ASAP (not used in write)
         if cls.update_snapshots:
             cls.write_queued_snapshots()
 
     @classmethod
     def _make_snaps_dir(cls):
-        if not cls._snaps_dir.exists():
-            cls._snaps_dir.mkdir()
+        try:
+            cls._snaps_dir.mkdir(exist_ok=True)
+        except FileExistsError as e:
+            raise CantUpdateSnapshots(
+                f"Can't write snapshots ({cls._snaps_dir} is not a directory"
+                f" so can't write snapshots to it)") from e
 
     @classmethod
     def write_queued_snapshots(cls):
         cls._make_snaps_dir()
-        for filepath, snapshots in cls._queued_snapshot_writes.items():
-            try:
-                with open(filepath, 'w') as f:
-                    SnapFormatter(snapshots).format_snap(f)
-            except FileNotFoundError:
-                if not cls._snaps_dir.is_dir():
-                    raise CantUpdateSnapshots(
-                        f"Can't write snapshots - {cls._snaps_dir} "
-                        f"is not is directory so can't write snapshots in it")
-                raise
+        for path, changes in cls._queued_changes.items():
+            with open_or_create_rw(path) as f:  # do in one go to reduce chance of racing
+                orig = parse_snap(f.read())  # Use most up-to-date value (no cache)
+                f.seek(0, os.SEEK_SET)  # go to start
+                format_snap(f, cls._apply_file_changes(orig, changes))
+
+    @classmethod
+    def _apply_file_changes(cls, orig: dict[str, str], new: dict[str, str]):
+        return orig | new
 
 
-class SnapParser:
-    def __init__(self, text: str):
-        self.text = text
+@dataclass
+class SnapOptions:
+    update: bool = False
+    long_message: bool = False
 
-    def parse_snap(self):
-        all_lines = self.text.splitlines()
-        index_lines = all_lines[0:2]
-        names: list[str]
-        csv_output = tuple(csv.reader(index_lines, 'unix'))
-        if len(csv_output) != 2:
-            raise SnapshotsNotFound("Can't read snapshot file (invalid format)")
-        lines_idx_str, names = csv_output
-        lines_idx = [int(idx_str) for idx_str in lines_idx_str]
-        assert len(set(names)) == len(names)
+
+class SingleSnapshot:
+    def __init__(self, parent: SnapshotTestCase, name: str, opts: SnapOptions):
+        self.p = parent
+        self.sub_name = name
+        self.opts = opts
+        self.full_name = f'{self.p.cls_name}::{self.p.method_name}:{self.sub_name}'
+
+    def assert_matches(self, actual: str, msg: str | None = None):
         try:
-            line_name_tup: tuple[tuple[int, str], ...] = tuple(
-                zip(lines_idx, names, strict=True))
-        except ValueError:
-            raise SnapshotsNotFound("Can't read snapshot file (invalid format)")
-        name_to_src = {}
-        for i, (line_idx, name) in enumerate(line_name_tup):
-            start = line_idx
-            if i == len(line_name_tup) - 1:
-                # last item so go until end
-                end = len(all_lines)  # exclusive, including first 2 lines
-            else:
-                end = line_name_tup[i + 1][0]
-            src = '\n'.join(all_lines[start:end])
-            name_to_src[name] = src
-        return name_to_src
+            expected = self.p.lookup_snapshot(self.full_name)
+        except SnapshotsNotFound:
+            if self.opts.update:
+                return self.queue_write(actual)
+            self._maybe_message_with_value(_SNAPS_NOT_FOUND_MSG, actual)
+            raise
+        if expected == actual:
+            return
+        if self.opts.update:
+            return self.queue_write(actual)
+        self._maybe_message_with_value(_SNAPS_DONT_MATCH_MSG, actual)
+        self.p.assertEqual(expected, actual, msg)  # will fail and error
+
+    def queue_write(self, value: str):
+        self.p.queue_write_snapshot(self.full_name, value)
+
+    def _maybe_message_with_value(self, msg: str, value: str):
+        if self.opts.long_message:
+            self._output_msg_with_value(msg, value)
+
+    def _output_msg_with_value(self, msg: str, value: str):
+        print(msg.format(full_name=self.full_name, value=value), file=sys.stderr)
 
 
-class SnapFormatter:
-    def __init__(self, name_to_src: dict[str, str]):
-        self.name_to_str = name_to_src
+def parse_snap(text: str):  # This is a bit overcomplicated - need a better format
+    all_lines = text.splitlines()
+    index_lines = all_lines[0:2]
+    names: list[str]
+    csv_output = tuple(csv.reader(index_lines, 'unix'))
+    if len(csv_output) != 2:
+        raise SnapshotsNotFound("Can't read snapshot file (invalid format)")
+    lines_idx_str, names = csv_output
+    lines_idx = [int(idx_str) for idx_str in lines_idx_str]
+    assert len(set(names)) == len(names)
+    try:
+        line_name_tup: tuple[tuple[int, str], ...] = tuple(
+            zip(lines_idx, names, strict=True))
+    except ValueError:
+        raise SnapshotsNotFound("Can't read snapshot file (invalid format)")
+    name_to_src = {}
+    for i, (line_idx, name) in enumerate(line_name_tup):
+        start = line_idx
+        if i == len(line_name_tup) - 1:
+            # last item so go until end
+            end = len(all_lines)  # exclusive, including first 2 lines
+        else:
+            end = line_name_tup[i + 1][0]
+        src = '\n'.join(all_lines[start:end])
+        name_to_src[name] = src
+    return name_to_src
 
-    def format_snap(self, file: IO[str]):
-        body_list = []
-        line_idx_strs: list[str] = []
-        names: list[str] = []
-        start_line = 2
-        for name, src in self.name_to_str.items():
-            n_lines = len(src.splitlines())
-            line_idx_strs.append(str(start_line))
-            names.append(name)
-            start_line += n_lines
-            body_list.append(src)
-        body = '\n'.join(body_list)
-        csv.writer(file, 'unix').writerows([line_idx_strs, names])
-        file.write(body)
+
+def format_snap(file: IO[str], snap_data: dict[str, str]):
+    body_list = []
+    line_idx_strs: list[str] = []
+    names: list[str] = []
+    start_line = 2
+    for name, src in snap_data.items():
+        n_lines = len(src.splitlines())
+        line_idx_strs.append(str(start_line))
+        names.append(name)
+        start_line += n_lines
+        body_list.append(src)
+    body = '\n'.join(body_list)
+    csv.writer(file, 'unix').writerows([line_idx_strs, names])
+    file.write(body)
