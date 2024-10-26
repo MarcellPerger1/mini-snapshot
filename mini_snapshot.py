@@ -1,3 +1,4 @@
+import contextlib
 import csv
 import inspect
 import os
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import IO
 
 
+# NOTE: This is copied from and should be kept up-to-date with
+# https://github.com/MarcellPerger1/programming_lang_2/blob/main/test/snapshottest.py
 class SnapshotsNotFound(RuntimeError):
     ...
 
@@ -22,15 +25,15 @@ def format_obj(obj: object) -> str:
         return method()
     if isinstance(obj, str):
         # already string, don't repr it to help with snapshot readability
-        # TODO: should be put something in front of this 
+        # TODO: should be put something in front of this
         #  e.g. '<str>(' + obj + ')' etc.,
         #  maybe repr it into a triple-quoted string?
         return obj
     try:
         return pprint.pformat(obj)
     except TypeError:
-        # TODO: this will never match for classes without __repr__ 
-        #  as the fallback is to <object at 0x1234...> and the address 
+        # TODO: this will never match for classes without __repr__
+        #  as the fallback is to <object at 0x1234...> and the address
         #  will (almost) never be the same
         return repr(obj)
 
@@ -78,6 +81,7 @@ class SnapshotTestCase(unittest.TestCase):
 
     _files_cache: dict[str, dict[str, str]]
     _queued_changes: dict[str, dict[str, str]]
+    _subtest = None
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -135,6 +139,15 @@ class SnapshotTestCase(unittest.TestCase):
     def get_opts(self) -> 'SnapOptions':
         return SnapOptions(self.update_snapshots, self.longMessage)
 
+    def get_self_name(self):
+        parts = [f'{self.cls_name}::{self.method_name}']
+        subt = self._subtest
+        while subt is not None:
+            # This formatting could be done better...
+            parts.append('{%s}' % subt._subDescription())
+            subt = getattr(subt, '_parent_', None)  # We override self.subTest
+        return '+'.join(parts)
+
     def _allocate_sub_name(self, name: str):
         if name is None:
             v = self.next_idx
@@ -152,6 +165,18 @@ class SnapshotTestCase(unittest.TestCase):
             return self._read_snapshot_file()[full_name]
         except KeyError:
             raise SnapshotsNotFound(f"Snapshot for {full_name} not found") from None
+
+    @contextlib.contextmanager
+    def subTest(self, msg: str = unittest.case._subtest_msg_sentinel, **params):
+        parent_st = self._subtest
+        old_idx = self.next_idx
+        self.next_idx = 0
+        try:
+            with super().subTest(msg, **params) as st:
+                self._subtest._parent_ = parent_st
+                yield st
+        finally:
+            self.next_idx = old_idx
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -193,7 +218,7 @@ class SingleSnapshot:
         self.p = parent
         self.sub_name = name
         self.opts = opts
-        self.full_name = f'{self.p.cls_name}::{self.p.method_name}:{self.sub_name}'
+        self.full_name = f'{self.p.get_self_name()}:{self.sub_name}'
 
     def assert_matches(self, actual: str, msg: str | None = None):
         try:
