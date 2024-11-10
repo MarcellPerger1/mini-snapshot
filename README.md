@@ -1,5 +1,5 @@
 # mini-snapshot
-A small (<300 lines of code) snapshot testing library for python's unittest. This is a work in progress right now.
+A small (<400 lines of code) snapshot testing library for python's unittest. This is a work in progress right now.
 
 ## Usage
 ```python
