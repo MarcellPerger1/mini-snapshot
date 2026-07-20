@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 # NOTE: This is copied from and should be kept up-to-date with
-# https://github.com/MarcellPerger1/mini-snapshot/blob/main/mini_snapshot.py
+# https://github.com/MarcellPerger1/programming_lang_2/blob/main/test/common/snapshottest.py
 class SnapshottestError(RuntimeError):
     pass
 
