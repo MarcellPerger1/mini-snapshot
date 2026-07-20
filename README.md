@@ -19,10 +19,12 @@ class MySnapshotTest(SnapshotTestCase):
 - It **shouldn't** cause any arbitrary code execution even if the snapshots aren't trusted
 - Customizable snapshot formatting: define `_format_snapshot_` (single underscores, not double) on a class like you would do with `__repr__`
 - Works on python 3.10+
+- Cleaning unused snapshots in the `.snapshots` directory
+
 ## Future possible features (roughly largest -> smallest priority)
 - Make it work on classes without a `__repr__`
-- Cleaning unused snapshots in the `.snapshots` directory (how would that work with skipped tests)
 - Put it on pypi so that it can be installed easily with pip
-- Only write snapshots if the rest of the test passes?
+- Improve cleaning unused snapshots (e.g. when whole class disappears) - requires custom runner
+- Only write snapshots if the rest of the test passes? - requires custom runner to do properly
 - Perhaps a CLI so you don't have to fiddle with environment variables
 - Interactive mode like jest
